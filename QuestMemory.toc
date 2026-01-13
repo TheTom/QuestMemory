@@ -2,7 +2,8 @@
 ## Title: QuestMemory
 ## Notes: Track quest completions across all characters and display in tooltips
 ## Author: Tom
-## Version: 1.0.0
+## Version: 1.1.0
 ## SavedVariables: QuestMemoryDB
 
 Core.lua
+Options.lua

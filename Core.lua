@@ -1,6 +1,6 @@
 -- QuestMemory: Track quest completions across all characters
 -- Author: Tom
--- Version: 1.0.0
+-- Version: 1.1.0
 
 local ADDON_NAME = "QuestMemory"
 local DB_VERSION = 2
@@ -64,14 +64,28 @@ local function FormatRelativeTime(timestamp)
 
     local diff = time() - timestamp
     if diff < 3600 then
-        return math.max(1, math.floor(diff / 60)) .. "m ago"
+        local mins = math.max(1, math.floor(diff / 60))
+        return mins .. (mins == 1 and " min ago" or " mins ago")
     elseif diff < 86400 then
-        return math.floor(diff / 3600) .. "h ago"
+        local hours = math.floor(diff / 3600)
+        return hours .. (hours == 1 and " hour ago" or " hours ago")
     elseif diff < 604800 then
-        return math.floor(diff / 86400) .. "d ago"
+        local days = math.floor(diff / 86400)
+        return days .. (days == 1 and " day ago" or " days ago")
+    elseif diff < 2592000 then  -- ~30 days
+        local weeks = math.floor(diff / 604800)
+        return weeks .. (weeks == 1 and " week ago" or " weeks ago")
+    elseif diff < 7776000 then  -- ~90 days
+        local months = math.floor(diff / 2592000)
+        return months .. (months == 1 and " month ago" or " months ago")
     else
-        return date("%b %d", timestamp)
+        return "long ago"
     end
+end
+
+local function GetSettings()
+    if not QuestMemoryDB then return { enabled = true, showTimestamps = true } end
+    return QuestMemoryDB["_settings"] or { enabled = true, showTimestamps = true }
 end
 
 local function Truncate(str, maxLen)
@@ -111,11 +125,13 @@ local function InitDB()
     QuestMemoryDB = QuestMemoryDB or {
         ["_dbVersion"] = DB_VERSION,
         ["_questMeta"] = {},
+        ["_settings"] = { enabled = true, showTimestamps = true },
     }
 
     db = QuestMemoryDB
     questMeta = db["_questMeta"] or {}
     db["_questMeta"] = questMeta
+    db["_settings"] = db["_settings"] or { enabled = true, showTimestamps = true }
 
     MigrateDB()
 
@@ -214,8 +230,13 @@ end
 -- SECTION 6: Tooltip Rendering
 -- ============================================================================
 
+local MAX_COMPLETIONS_SHOWN = 3
+
 local function AddQuestInfoToTooltip(questId)
     if not questId or not GameTooltip then return end
+
+    local settings = GetSettings()
+    if not settings.enabled then return end
 
     GameTooltip:AddLine(" ")
 
@@ -238,18 +259,43 @@ local function AddQuestInfoToTooltip(questId)
     -- Other character completions
     local completions = GetOtherCharCompletions(questId)
     if #completions > 0 then
-        GameTooltip:AddLine(COLORS.completedBy .. "Completed by:|r")
-        for _, c in ipairs(completions) do
+        -- Single completion: inline format
+        if #completions == 1 then
+            local c = completions[1]
             local name = ExtractCharName(c.char)
-            local timeStr = FormatRelativeTime(c.ts)
-            local line = timeStr and ("  " .. name .. " " .. COLORS.timestamp .. "(" .. timeStr .. ")|r") or ("  " .. name)
-            GameTooltip:AddLine(line)
+            if settings.showTimestamps then
+                local timeStr = FormatRelativeTime(c.ts)
+                local line = timeStr and (name .. " " .. COLORS.timestamp .. "– " .. timeStr .. "|r") or name
+                GameTooltip:AddLine(COLORS.completedBy .. "Completed by " .. line .. "|r")
+            else
+                GameTooltip:AddLine(COLORS.completedBy .. "Completed by " .. name .. "|r")
+            end
+        else
+            -- Multiple completions: list format
+            GameTooltip:AddLine(COLORS.completedBy .. "Completed by:|r")
+            local shown = 0
+            for i, c in ipairs(completions) do
+                if shown >= MAX_COMPLETIONS_SHOWN then
+                    local remaining = #completions - shown
+                    GameTooltip:AddLine(COLORS.timestamp .. "  +" .. remaining .. " more|r")
+                    break
+                end
+                local name = ExtractCharName(c.char)
+                if settings.showTimestamps then
+                    local timeStr = FormatRelativeTime(c.ts)
+                    local line = timeStr and ("  " .. name .. " " .. COLORS.timestamp .. "– " .. timeStr .. "|r") or ("  " .. name)
+                    GameTooltip:AddLine(line)
+                else
+                    GameTooltip:AddLine("  " .. name)
+                end
+                shown = shown + 1
+            end
         end
     else
-        GameTooltip:AddLine(COLORS.notCompleted .. "Not completed by other characters|r")
+        GameTooltip:AddLine(COLORS.timestamp .. "No recorded completions|r")
     end
 
-    -- Quest ID reference
+    -- Quest ID reference (subtle)
     GameTooltip:AddLine(COLORS.questId .. "Quest ID: " .. questId .. "|r")
 
     GameTooltip:Show()
@@ -552,12 +598,18 @@ local function ShowChars()
     if not found then Print("No characters tracked yet") end
 end
 
+local function ClearAllData()
+    StaticPopup_Show("QUESTMEMORY_CONFIRM_CLEAR")
+end
+
 local function ShowHelp()
     Print("Commands:")
     Print("  /qm - Show help")
+    Print("  /qm config - Open options panel")
     Print("  /qm count - Quest count for this character")
     Print("  /qm chars - All tracked characters")
     Print("  /qm info <id> - Quest details")
+    Print("  /qm clear - Clear all data")
     Print("Right-click quests in log for more options")
 end
 
@@ -570,6 +622,10 @@ SlashCmdList["QUESTMEMORY"] = function(msg)
     if cmd == "count" then ShowCount()
     elseif cmd == "chars" then ShowChars()
     elseif cmd == "info" then PrintQuestInfo(arg)
+    elseif cmd == "clear" then ClearAllData()
+    elseif cmd == "config" or cmd == "options" or cmd == "settings" then
+        InterfaceOptionsFrame_OpenToCategory("QuestMemory")
+        InterfaceOptionsFrame_OpenToCategory("QuestMemory")  -- Called twice due to Blizzard bug
     else ShowHelp()
     end
 end
@@ -586,7 +642,7 @@ frame:RegisterEvent("QUEST_TURNED_IN")
 frame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
         InitDB()
-        Print("Loaded. Type /qm for help.")
+        Print("v1.1.0 loaded. Type /qm for help.")
 
     elseif event == "PLAYER_LOGIN" then
         local count = BackfillQuests()
